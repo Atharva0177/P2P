@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1"
+  />
+  <title>Web AirDrop (P2P via WebRTC)</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="container">
+    <h1>Web AirDrop</h1>
+    <p class="subtitle">Peer‑to‑peer file transfer over the internet using WebRTC</p>
+
+    <section class="card">
+      <h2>1) Start or join a session</h2>
+      <div class="row">
+        <button id="btnNewCode">Create session code</button>
+        <input id="codeInput" placeholder="Enter 6-digit code" maxlength="6" />
+        <button id="btnJoin">Join</button>
+      </div>
+
+      <!-- QR actions -->
+      <div class="row">
+        <button id="btnShowQR" disabled>Show QR</button>
+        <button id="btnCopyLink" disabled>Copy link</button>
+      </div>
+
+      <!-- QR panel -->
+      <div id="qrPanel" class="qr-panel" hidden>
+        <div id="qrCode"></div>
+        <div class="qr-text">
+          <p class="hint" id="qrHint">Scan this on the other device to auto-join as receiver.</p>
+          <a id="shareLink" href="#" target="_blank" rel="noopener" class="qr-link"></a>
+        </div>
+      </div>
+
+      <p id="sessionInfo"></p>
+    </section>
+
+    <section class="card">
+      <h2>2) Transfer settings</h2>
+      <p class="hint">Choose before selecting a role. These settings affect the sender only.</p>
+      <div class="row" style="gap:16px; align-items: center;">
+        <label for="numChannels" style="min-width: 160px;">Parallel channels</label>
+        <input id="numChannels" type="number" min="1" max="8" value="4" />
+        <label for="chunkSizeKB" style="min-width: 160px;">Chunk size (KiB)</label>
+        <input id="chunkSizeKB" type="number" min="16" max="1024" step="16" value="128" />
+      </div>
+      <p class="hint">Tip: 2–6 channels and 64–256 KiB chunks are good starting points.</p>
+    </section>
+
+    <section class="card">
+      <h2>3) Choose role</h2>
+      <div class="row">
+        <button id="btnIamSender" disabled>I am the sender</button>
+        <button id="btnIamReceiver" disabled>I am the receiver</button>
+      </div>
+      <p class="hint">Open this site on the other device and join with the same code.</p>
+    </section>
+
+    <section class="card" id="senderPanel" hidden>
+      <h2>Sender</h2>
+      <input type="file" id="fileInput" multiple />
+      <div class="row">
+        <button id="btnSend" disabled>Send</button>
+      </div>
+      <div class="progress">
+        <div id="sendProgress" class="bar" style="width:0%"></div>
+      </div>
+      <p id="sendStatus"></p>
+    </section>
+
+    <section class="card" id="receiverPanel" hidden>
+      <h2>Receiver</h2>
+      <div class="progress">
+        <div id="recvProgress" class="bar" style="width:0%"></div>
+      </div>
+      <p id="recvStatus"></p>
+      <div id="downloads"></div>
+    </section>
+
+    <section class="card">
+      <h2>Log</h2>
+      <pre id="log" class="log"></pre>
+    </section>
+
+    <footer>
+      <p>For best reliability across networks, configure a TURN server. This demo uses public STUN.</p>
+    </footer>
+  </div>
+
+  <!-- QR code generator (CDN). If you prefer local, download and serve as /static/vendor/qrcode.min.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+  <!-- Bump the version to force browsers to fetch the updated JS -->
+  <script src="/static/app.js?v=6" type="module"></script>
+</body>
+</html>

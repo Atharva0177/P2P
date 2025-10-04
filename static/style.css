@@ -1,0 +1,103 @@
+:root {
+  --bg: #0f172a;
+  --fg: #e2e8f0;
+  --muted: #94a3b8;
+  --card: #111827;
+  --accent: #60a5fa;
+  --accent-2: #34d399;
+  --danger: #f87171;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: radial-gradient(1200px 800px at 20% 0%, #111827, #0b1020) no-repeat, var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+  min-height: 100vh;
+}
+.container { max-width: 900px; margin: 0 auto; padding: 24px; }
+h1 { margin: 0 0 6px 0; font-size: 28px; }
+.subtitle { margin: 0 0 18px 0; color: var(--muted); }
+.card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 12px;
+  padding: 16px;
+  margin: 14px 0;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+}
+.row { display: flex; gap: 10px; flex-wrap: wrap; }
+input {
+  background: #0b1224;
+  border: 1px solid #1f2937;
+  color: var(--fg);
+  padding: 10px 12px;
+  border-radius: 8px;
+  min-width: 200px;
+}
+button {
+  background: linear-gradient(180deg, #2563eb, #1d4ed8);
+  color: white;
+  border: 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: transform 0.05s ease, opacity 0.2s ease;
+}
+button:hover { transform: translateY(-1px); opacity: 0.95; }
+button[disabled] { opacity: 0.4; cursor: not-allowed; }
+.hint { color: var(--muted); }
+.progress {
+  margin-top: 10px;
+  width: 100%;
+  height: 10px;
+  background: #111827;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid #1f2937;
+}
+.bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 0.2s ease;
+}
+.log {
+  max-height: 220px;
+  overflow: auto;
+  background: #0b1224;
+  border: 1px solid #1f2937;
+  padding: 10px;
+  border-radius: 8px;
+}
+footer { color: var(--muted); margin-top: 16px; font-size: 13px; }
+a.dl {
+  display: inline-block;
+  margin: 8px 8px 0 0;
+  color: white;
+  background: #065f46;
+  padding: 8px 10px;
+  border-radius: 8px;
+  text-decoration: none;
+}
+
+/* QR additions */
+.qr-panel {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-top: 12px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  padding: 12px;
+  border-radius: 12px;
+}
+#qrCode canvas, #qrCode img {
+  width: 144px;
+  height: 144px;
+}
+.qr-text { display: flex; flex-direction: column; gap: 6px; }
+.qr-link {
+  color: #a7f3d0;
+  text-decoration: underline;
+  word-break: break-all;
+}
