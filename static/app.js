@@ -29,6 +29,13 @@ const recvProgress = document.getElementById("recvProgress");
 const recvStatus = document.getElementById("recvStatus");
 const downloads = document.getElementById("downloads");
 
+// QR elements
+const btnShowQR = document.getElementById("btnShowQR");
+const btnCopyLink = document.getElementById("btnCopyLink");
+const qrPanel = document.getElementById("qrPanel");
+const qrCodeEl = document.getElementById("qrCode");
+const shareLinkEl = document.getElementById("shareLink");
+
 let ws = null;
 let pc = null;
 let isSender = null;
@@ -96,6 +103,9 @@ btnNewCode?.addEventListener("click", async () => {
     codeInput.value = code;
     sessionInfo.textContent = `Session code: ${code} (share with peer)`;
     log("New code generated:", code);
+
+    // Ensure QR buttons/link update immediately after programmatic value set
+    window.qrUpdateShareUIFromCode?.();
   } catch (e) {
     log("Failed to get new code", e);
   }
@@ -619,10 +629,14 @@ async function finalizeFile(st) {
   // If not using writer, assemble Blob and create download link
   if (st.writer) {
     try { await st.writer.close(); } catch {}
+    // Safety: ensure we ACK the known total size (prevents 0-bytes ACK edge cases)
+    st.receivedBytes = st.size;
+
     recvStatus.textContent = `Saved ${st.name} to disk`;
     const note = document.createElement("div");
     note.textContent = `Saved ${st.name}`;
     downloads.appendChild(note);
+    log("Receiver: closed writer, bytes (assumed) =", st.receivedBytes);
   } else {
     // Verify all parts present and assemble
     const parts = new Array(st.totalChunks);
@@ -648,13 +662,20 @@ async function finalizeFile(st) {
     downloads.appendChild(a);
     recvStatus.textContent = `Received ${st.name}`;
     st.receivedBytes = total;
+    log("Receiver: assembled blob, bytes =", st.receivedBytes);
   }
 
   // Send ACK with bytes received
   if (ctrl && ctrl.open) {
     try {
-      await safeSend(ctrl.dc, JSON.stringify({ kind: "file-ack", fileId: st.fileId, receivedBytes: st.receivedBytes }));
-    } catch {}
+      const ack = { kind: "file-ack", fileId: st.fileId, receivedBytes: st.receivedBytes };
+      await safeSend(ctrl.dc, JSON.stringify(ack));
+      log("Receiver: sent ACK", ack);
+    } catch (e) {
+      log("Receiver: failed to send ACK", e);
+    }
+  } else {
+    log("Receiver: ctrl not open; cannot send ACK");
   }
   recvFiles.delete(st.fileId);
   log("File received:", st.name);
@@ -691,3 +712,118 @@ function clampInt(n, min, max) {
   if (n > max) n = max;
   return n;
 }
+
+/* =======================
+   QR feature (non-breaking)
+   ======================= */
+(function qrFeature() {
+  function isValidCode(v) { return /^\d{6}$/.test(v || ""); }
+  function shareUrlFor(code) { return `${location.origin}/?code=${code}&join=1&role=receiver`; }
+
+  function setDisabled(el, state) {
+    if (!el) return;
+    el.disabled = !!state;
+    if (state) el.setAttribute("disabled", "");
+    else el.removeAttribute("disabled");
+  }
+
+  function renderQR(text) {
+    if (!qrCodeEl) return;
+    qrCodeEl.innerHTML = "";
+    if (window.QRCode) {
+      new QRCode(qrCodeEl, {
+        text,
+        width: 144,
+        height: 144,
+        colorDark: "#e2e8f0",
+        colorLight: "#0b1224",
+        correctLevel: QRCode.CorrectLevel.M,
+      });
+    } else {
+      const p = document.createElement("p");
+      p.textContent = text;
+      qrCodeEl.appendChild(p);
+    }
+  }
+
+  function updateFromCode() {
+    const code = (codeInput?.value || "").trim();
+    const valid = isValidCode(code);
+
+    setDisabled(btnShowQR, !valid);
+    setDisabled(btnCopyLink, !valid);
+
+    if (!valid) {
+      if (qrPanel) qrPanel.hidden = true;
+      if (qrCodeEl) qrCodeEl.innerHTML = "";
+      if (shareLinkEl) {
+        shareLinkEl.textContent = "";
+        shareLinkEl.removeAttribute("href");
+      }
+      return;
+    }
+    const url = shareUrlFor(code);
+    if (shareLinkEl) {
+      shareLinkEl.textContent = url;
+      shareLinkEl.href = url;
+    }
+  }
+
+  // Expose so the main "Create session code" handler can call it after setting value
+  window.qrUpdateShareUIFromCode = updateFromCode;
+
+  codeInput?.addEventListener("input", updateFromCode);
+
+  btnShowQR?.addEventListener("click", () => {
+    const code = (codeInput?.value || "").trim();
+    if (!isValidCode(code)) return;
+    renderQR(shareUrlFor(code));
+    if (qrPanel) qrPanel.hidden = false;
+  });
+
+  btnCopyLink?.addEventListener("click", async () => {
+    const code = (codeInput?.value || "").trim();
+    if (!isValidCode(code)) return;
+    const url = shareUrlFor(code);
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = url;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch {}
+    }
+  });
+
+  // Auto-join support via URL params
+  (function initFromURL() {
+    const params = new URLSearchParams(location.search);
+    const code = params.get("code");
+    const join = params.get("join");
+    const role = params.get("role"); // "receiver" or "sender"
+
+    if (code && isValidCode(code) && codeInput) {
+      codeInput.value = code;
+      updateFromCode();
+    }
+    if (join) {
+      setTimeout(() => {
+        btnJoin?.click();
+        if (role === "receiver") {
+          setTimeout(() => document.getElementById("btnIamReceiver")?.click(), 300);
+        } else if (role === "sender") {
+          setTimeout(() => document.getElementById("btnIamSender")?.click(), 300);
+        }
+      }, 50);
+    }
+  })();
+
+  // Run once on load in case a code is already present
+  updateFromCode();
+})();
