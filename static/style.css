@@ -27,7 +27,7 @@ h1 { margin: 0 0 6px 0; font-size: 28px; }
   box-shadow: 0 10px 30px rgba(0,0,0,0.2);
 }
 .row { display: flex; gap: 10px; flex-wrap: wrap; }
-input {
+input, select {
   background: #0b1224;
   border: 1px solid #1f2937;
   color: var(--fg);
@@ -46,6 +46,9 @@ button {
 }
 button:hover { transform: translateY(-1px); opacity: 0.95; }
 button[disabled] { opacity: 0.4; cursor: not-allowed; }
+button.secondary {
+  background: #374151;
+}
 .hint { color: var(--muted); }
 .progress {
   margin-top: 10px;
@@ -100,4 +103,27 @@ a.dl {
   color: #a7f3d0;
   text-decoration: underline;
   word-break: break-all;
+}
+
+/* Drag-and-drop */
+.dropzone {
+  border: 2px dashed #334155;
+  border-radius: 12px;
+  padding: 18px;
+  text-align: center;
+  color: var(--muted);
+  background: rgba(255,255,255,0.02);
+  margin-bottom: 10px;
+}
+.dropzone.dragover {
+  border-color: var(--accent);
+  background: rgba(37, 99, 235, 0.1);
+}
+
+/* Details list */
+.details {
+  margin: 8px 0 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 13px;
 }

@@ -63,23 +63,56 @@
 
     <section class="card" id="senderPanel" hidden>
       <h2>Sender</h2>
-      <input type="file" id="fileInput" multiple />
+
+      <!-- Drag & drop -->
+      <div id="dropZone" class="dropzone">
+        <p>Drag & drop files or folders here</p>
+        <p class="muted">or use the pickers below</p>
+      </div>
+
+      <div class="row">
+        <input type="file" id="fileInput" multiple />
+        <input type="file" id="dirInput" webkitdirectory multiple hidden />
+        <button id="btnPickFiles" type="button" class="secondary">Choose files</button>
+        <button id="btnPickFolders" type="button" class="secondary">Choose folder(s)</button>
+      </div>
+
       <div class="row">
         <button id="btnSend" disabled>Send</button>
+        <button id="btnResetSender" class="secondary">Send another</button>
       </div>
+
       <div class="progress">
         <div id="sendProgress" class="bar" style="width:0%"></div>
       </div>
       <p id="sendStatus"></p>
+      <ul id="sendDetails" class="details"></ul>
     </section>
 
     <section class="card" id="receiverPanel" hidden>
       <h2>Receiver</h2>
+
+      <div class="row" style="gap:16px; align-items:center">
+        <label for="conflictMode" style="min-width: 160px;">On filename conflict</label>
+        <select id="conflictMode">
+          <option value="auto-rename" selected>Auto-rename</option>
+          <option value="overwrite">Overwrite</option>
+          <option value="skip">Skip</option>
+        </select>
+      </div>
+
       <div class="progress">
         <div id="recvProgress" class="bar" style="width:0%"></div>
       </div>
       <p id="recvStatus"></p>
+      <ul id="recvDetails" class="details"></ul>
+
       <div id="downloads"></div>
+
+      <div class="row" style="margin-top:10px;">
+        <button id="btnDownloadAll" class="secondary" disabled>Download all</button>
+        <button id="btnClearDownloads" class="secondary">Clear downloads</button>
+      </div>
     </section>
 
     <section class="card">
@@ -92,10 +125,10 @@
     </footer>
   </div>
 
-  <!-- QR code generator (CDN). If you prefer local, download and serve as /static/vendor/qrcode.min.js -->
+  <!-- QR code generator -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 
   <!-- Bump the version to force browsers to fetch the updated JS -->
-  <script src="/static/app.js?v=6" type="module"></script>
+  <script src="/static/app.js?v=10" type="module"></script>
 </body>
 </html>
