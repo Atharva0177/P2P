@@ -1,3 +1,7 @@
+// Web AirDrop - P2P over WebRTC
+// Adds: True resume across browser restarts (receiver-side persistence + resume-request)
+//       Pause / Resume / Cancel (sender-wide controls)
+
 const logEl = document.getElementById("log");
 function log(...args) {
   const line = args.map(a => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
@@ -32,6 +36,11 @@ const btnResetSender = document.getElementById("btnResetSender");
 const sendProgress = document.getElementById("sendProgress");
 const sendStatus = document.getElementById("sendStatus");
 const sendDetails = document.getElementById("sendDetails");
+
+// Pause/Resume/Cancel
+const btnPauseAll = document.getElementById("btnPauseAll");
+const btnResumeAll = document.getElementById("btnResumeAll");
+const btnCancelAll = document.getElementById("btnCancelAll");
 
 const dropZone = document.getElementById("dropZone");
 
@@ -85,32 +94,37 @@ let pendingSignals = [];
 const MAX_BUFFERED = 16 * 1024 * 1024; // pause when >= 16 MiB queued
 const LOW_WATER   =  4 * 1024 * 1024;  // resume when <= 4 MiB queued
 
-// Keep-alive over ctrl channel
+// Sender state
+let nextFileId = 1;
+const awaitingAcks = new Map(); // fileId -> {resolve,reject,timeout}
+const outgoing = new Map(); // fileId -> { file, chunkSize, totalChunks, xferId }
+
+// Pause/Resume/Cancel state
+let SENDER_PAUSED = false;
+const CANCEL_SET = new Set(); // fileId set
+function updatePRCButtons() {
+  const active = outgoing.size > 0;
+  setDisabled(btnPauseAll, !active || SENDER_PAUSED);
+  setDisabled(btnResumeAll, !active || !SENDER_PAUSED);
+  setDisabled(btnCancelAll, !active);
+}
+
+// Receiver state
+// fileId -> { xferId, name, size, type, chunkSize, totalChunks, receivedCount, receivedBytes,
+//             chunks[], have: Uint8Array, writer, _finalized, sha256, hashAlg, verified, _speedo }
+const recvFiles = new Map();
+// Binary chunks before metadata
+const preMetaChunks = new Map(); // fileId -> Array<ArrayBuffer>
+
+// Bulk in-memory downloads
+const receivedMemFiles = []; // { name, blob, type }
+
+// Keep-alive (from prior version)
 const KEEPALIVE_MS = 15000;
 const KEEPALIVE_DEAD_MS = 45000;
 let keepAliveTimer = null;
 let lastPong = 0;
 
-// Sender state
-let nextFileId = 1;
-const awaitingAcks = new Map(); // fileId -> {resolve,reject,timeout}
-const outgoing = new Map(); // fileId -> { file, chunkSize, totalChunks }
-
-// Receiver state
-// fileId -> {
-//   name, size, type, chunkSize, totalChunks,
-//   receivedCount, receivedBytes,
-//   chunks[], have: Uint8Array, writer, _finalized,
-//   sha256, hashAlg, verified, _speedo
-// }
-const recvFiles = new Map();
-// Binary chunks before metadata
-const preMetaChunks = new Map(); // fileId -> Array<ArrayBuffer>
-
-// Collect in-memory received files for bulk download
-const receivedMemFiles = []; // { name, blob, type }
-
-// Speed tracker
 function Speedo(windowMs = 1500) {
   let bytes = 0;
   let start = performance.now();
@@ -132,6 +146,87 @@ const rtcConfig = {
   ],
 };
 
+// IndexedDB (receiver persistence for true resume)
+const IDB_DB_NAME = "p2p-store";
+const IDB_DB_VER = 1;
+let idbPromise = null;
+function idbOpen() {
+  if (idbPromise) return idbPromise;
+  idbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_DB_NAME, IDB_DB_VER);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains("files")) {
+        db.createObjectStore("files", { keyPath: "xferId" });
+      }
+      if (!db.objectStoreNames.contains("chunks")) {
+        const store = db.createObjectStore("chunks", { keyPath: "key" }); // key = `${xferId}:${idx}`
+        store.createIndex("byXfer", "xferId");
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return idbPromise;
+}
+async function idbPutFile(manifest) {
+  const db = await idbOpen();
+  return txPromise(db, "files", "readwrite", (store) => store.put(manifest));
+}
+async function idbGetFile(xferId) {
+  const db = await idbOpen();
+  return txPromise(db, "files", "readonly", (store) => store.get(xferId));
+}
+async function idbDeleteFile(xferId) {
+  const db = await idbOpen();
+  return txPromise(db, "files", "readwrite", (store) => store.delete(xferId));
+}
+async function idbPutChunk(xferId, idx, blob) {
+  const db = await idbOpen();
+  const key = `${xferId}:${idx}`;
+  return txPromise(db, "chunks", "readwrite", (store) => store.put({ key, xferId, idx, blob }));
+}
+async function idbDeleteChunksFor(xferId) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("chunks", "readwrite");
+    const store = tx.objectStore("chunks");
+    const index = store.index("byXfer");
+    const req = index.openCursor(IDBKeyRange.only(xferId));
+    req.onsuccess = () => {
+      const cur = req.result;
+      if (cur) {
+        store.delete(cur.primaryKey);
+        cur.continue();
+      } else resolve();
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbListIncomplete() {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("files", "readonly");
+    const store = tx.objectStore("files");
+    const req = store.getAll();
+    req.onsuccess = () => {
+      const all = req.result || [];
+      const incompletes = all.filter(f => (f.receivedCount || 0) < f.totalChunks);
+      resolve(incompletes);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+function txPromise(db, storeName, mode, fn) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, mode);
+    const store = tx.objectStore(storeName);
+    const req = fn(store);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
 // UI actions
 btnNewCode?.addEventListener("click", async () => {
   try {
@@ -140,7 +235,6 @@ btnNewCode?.addEventListener("click", async () => {
     if (codeInput) codeInput.value = code;
     if (sessionInfo) sessionInfo.textContent = `Session code: ${code} (share with peer)`;
     log("New code generated:", code);
-
     window.qrUpdateShareUIFromCode?.();
   } catch (e) {
     log("Failed to get new code", e);
@@ -187,7 +281,7 @@ btnIamReceiver?.addEventListener("click", async () => {
   await processPendingSignals();
 });
 
-// Drag-and-drop support
+// Drag-and-drop
 if (dropZone) {
   const onOver = (e) => { e.preventDefault(); dropZone.classList.add("dragover"); };
   const onLeave = () => { dropZone.classList.remove("dragover"); };
@@ -215,11 +309,9 @@ if (dropZone) {
   dropZone.addEventListener("drop", onDrop);
 }
 
-// Picker buttons
+// Pickers
 btnPickFiles?.addEventListener("click", () => fileInput?.click());
 btnPickFolders?.addEventListener("click", () => dirInput?.click());
-
-// Merge folder files into main file input
 dirInput?.addEventListener("change", () => {
   if (!dirInput.files) return;
   mergeSelectedFiles([...dirInput.files]);
@@ -241,12 +333,6 @@ function mergeSelectedFiles(newFiles) {
   updateSendEnabled();
 }
 
-function updateSendEnabled() {
-  if (!btnSend) return;
-  btnSend.disabled = !(channels.some(c => c.open && c.type === "data") && fileInput?.files?.length > 0);
-}
-
-// Read dropped items (including directories via webkit entries)
 async function readDataTransferItems(items) {
   const files = [];
   const readers = [];
@@ -290,7 +376,6 @@ function readDirectoryEntry(dirEntry, path) {
   });
 }
 
-// Clear downloads
 btnClearDownloads?.addEventListener("click", () => {
   if (downloads) downloads.innerHTML = "";
   if (recvDetails) recvDetails.innerHTML = "";
@@ -298,7 +383,6 @@ btnClearDownloads?.addEventListener("click", () => {
   updateDownloadAllState();
 });
 
-// Download all (sequential individual downloads, no ZIP)
 btnDownloadAll?.addEventListener("click", async () => {
   if (!receivedMemFiles.length) return;
   for (const f of receivedMemFiles) {
@@ -323,17 +407,30 @@ async function triggerDownload(name, blob) {
   }
 }
 
-function updateDownloadAllState() {
-  toggleDisabled(btnDownloadAll, receivedMemFiles.length === 0);
-}
-
-// Reset sender UI
 btnResetSender?.addEventListener("click", () => {
   if (fileInput) fileInput.value = "";
   updateSendEnabled();
   if (sendProgress) sendProgress.style.width = "0%";
   if (sendStatus) sendStatus.textContent = "";
   if (sendDetails) sendDetails.innerHTML = "";
+});
+
+// Pause/Resume/Cancel buttons
+btnPauseAll?.addEventListener("click", async () => {
+  SENDER_PAUSED = true;
+  updatePRCButtons();
+  if (ctrl?.open) safeSend(ctrl.dc, JSON.stringify({ kind: "pause-all" })).catch(()=>{});
+});
+btnResumeAll?.addEventListener("click", async () => {
+  SENDER_PAUSED = false;
+  updatePRCButtons();
+  if (ctrl?.open) safeSend(ctrl.dc, JSON.stringify({ kind: "resume-all" })).catch(()=>{});
+});
+btnCancelAll?.addEventListener("click", async () => {
+  // Mark all current outgoing as canceled
+  for (const fileId of outgoing.keys()) CANCEL_SET.add(fileId);
+  updatePRCButtons();
+  if (ctrl?.open) safeSend(ctrl.dc, JSON.stringify({ kind: "cancel-all" })).catch(()=>{});
 });
 
 async function joinSession(code) {
@@ -359,17 +456,14 @@ async function joinSession(code) {
           await pc.setLocalDescription(offer);
           wsSend({ type: "sdp", sdp: pc.localDescription });
           log("Sent (re)offer");
-        } catch (e) {
-          log("Error re-offering:", e);
-        }
+        } catch (e) { log("Error re-offering:", e); }
       }
       return;
     }
 
     if (msg.type === "peer-disconnected") {
-      // Do NOT tear down the WebRTC session if signaling peer disconnects
-      // The P2P connection can remain active without signaling.
-      log("Peer disconnected from signaling. P2P connection remains.");
+      // Keep P2P up; only log
+      log("Peer disconnected (signaling). P2P may remain active.");
       return;
     }
 
@@ -382,9 +476,7 @@ async function joinSession(code) {
           await pc.setLocalDescription(offer);
           wsSend({ type: "sdp", sdp: pc.localDescription });
           log("Sent (re)offer after receiver ready");
-        } catch (e) {
-          log("Error re-offering on receiver-ready:", e);
-        }
+        } catch (e) { log("Error re-offering on receiver-ready:", e); }
       }
       return;
     }
@@ -395,7 +487,6 @@ async function joinSession(code) {
     }
   };
   ws.onclose = () => {
-    // Do NOT tear down the peer on signaling close; keep P2P alive for more transfers
     log("WebSocket signaling closed; keeping P2P session alive.");
   };
   ws.onerror = (e) => {
@@ -451,11 +542,16 @@ function attachChannel(dc, label, type) {
   dc.binaryType = "arraybuffer";
   try { dc.bufferedAmountLowThreshold = LOW_WATER; } catch {}
 
-  dc.onopen = () => {
+  dc.onopen = async () => {
     entry.open = true;
     log(`DataChannel open: ${label}`);
     if (type === "ctrl") startKeepAlive();
     updateSendEnabled();
+
+    // On receiver, after ctrl is open, try to resume any persisted transfers
+    if (!isSender && type === "ctrl") {
+      await trySendResumeRequests();
+    }
   };
   dc.onclose = () => { entry.open = false; log(`DataChannel closed: ${label}`); };
   dc.onerror = (e) => log(`DataChannel error [${label}]`, e);
@@ -468,7 +564,7 @@ function attachChannel(dc, label, type) {
   }
 }
 
-// Keep-alive helpers
+// Keep-alive
 function startKeepAlive() {
   stopKeepAlive();
   lastPong = Date.now();
@@ -586,7 +682,6 @@ btnSend?.addEventListener("click", async () => {
     for (const file of files) {
       const start = performance.now();
 
-      // Optional SHA-256 (<=100MB)
       let sha256hex = null;
       if (file.size <= 100 * 1024 * 1024 && crypto?.subtle) {
         if (sendStatus) sendStatus.textContent = `Hashing ${file.name}...`;
@@ -627,17 +722,20 @@ function fmtEta(sec) {
   return `${r}s`;
 }
 
-// Sender: striped transfer with NACK repair
+// Sender: striped transfer with NACK repair + Pause/Cancel + Resume-handling
 async function sendFileStriped(file, dataChans, sha256hex, onProgressDelta) {
   const fileId = nextFileId++;
+  const xferId = (crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`);
   const chunkSize = clampInt(USER_CHUNK_SIZE_KIB, 16, 1024) * 1024;
   const totalChunks = Math.ceil(file.size / chunkSize) || 1;
 
-  outgoing.set(fileId, { file, chunkSize, totalChunks });
+  outgoing.set(fileId, { file, chunkSize, totalChunks, xferId });
+  updatePRCButtons();
 
   const meta = {
     kind: "file-meta",
-    fileId, name: file.name, size: file.size,
+    fileId, xferId,
+    name: file.name, size: file.size,
     type: file.type || "application/octet-stream",
     chunkSize, totalChunks,
     sha256: sha256hex || null,
@@ -650,8 +748,6 @@ async function sendFileStriped(file, dataChans, sha256hex, onProgressDelta) {
   const stack = [];
   for (let i = totalChunks - 1; i >= 0; i--) stack.push(i);
 
-  let sentBytes = 0;
-
   function makeHeader(fid, idx) {
     const buf = new ArrayBuffer(8);
     const dv = new DataView(buf);
@@ -663,6 +759,11 @@ async function sendFileStriped(file, dataChans, sha256hex, onProgressDelta) {
   async function worker(entry) {
     const dc = entry.dc;
     for (;;) {
+      // Honor cancel
+      if (CANCEL_SET.has(fileId)) return;
+      // Honor pause
+      while (SENDER_PAUSED) await sleep(50);
+
       if (dc.readyState !== "open") throw new Error(`Channel ${entry.label} closed`);
       const idx = stack.pop();
       if (idx === undefined) return;
@@ -681,7 +782,6 @@ async function sendFileStriped(file, dataChans, sha256hex, onProgressDelta) {
       }
 
       const delta = (end - start);
-      sentBytes += delta;
       onProgressDelta?.(delta);
     }
   }
@@ -689,6 +789,15 @@ async function sendFileStriped(file, dataChans, sha256hex, onProgressDelta) {
   const workers = dataChans.map(c => worker(c));
   await Promise.all(workers);
   await Promise.all(dataChans.map(c => waitForBufferedAmountLow(c.dc)));
+
+  if (CANCEL_SET.has(fileId)) {
+    // Notify receiver (optional)
+    if (ctrl?.open) await safeSend(ctrl.dc, JSON.stringify({ kind: "cancel", fileId, xferId }));
+    outgoing.delete(fileId);
+    updatePRCButtons();
+    CANCEL_SET.delete(fileId);
+    throw new Error(`Transfer canceled: ${file.name}`);
+  }
 
   const ack = await waitForAckOrRepair(fileId);
 
@@ -698,6 +807,7 @@ async function sendFileStriped(file, dataChans, sha256hex, onProgressDelta) {
   }
 
   outgoing.delete(fileId);
+  updatePRCButtons();
   log("File sent and acknowledged:", file.name);
 }
 
@@ -712,18 +822,15 @@ function waitForAckOrRepair(fileId) {
   });
 }
 
-// Receiver: control messages
+// Receiver: ctrl messages (resume + keepalive + metadata)
 async function onCtrlMessage(ev) {
   const data = ev.data;
   if (typeof data !== "string") return;
   try {
     const msg = JSON.parse(data);
 
-    // Keep-alive respond/update
     if (msg.kind === "ping") {
-      if (ctrl && ctrl.open) {
-        try { await safeSend(ctrl.dc, JSON.stringify({ kind: "pong", t: msg.t })); } catch {}
-      }
+      if (ctrl && ctrl.open) { try { await safeSend(ctrl.dc, JSON.stringify({ kind: "pong", t: msg.t })); } catch {} }
       return;
     }
     if (msg.kind === "pong") {
@@ -731,10 +838,24 @@ async function onCtrlMessage(ev) {
       return;
     }
 
+    if (msg.kind === "pause-all") { appendDetail(recvDetails, "Sender paused"); return; }
+    if (msg.kind === "resume-all") { appendDetail(recvDetails, "Sender resumed"); return; }
+    if (msg.kind === "cancel-all") { appendDetail(recvDetails, "Sender canceled transfers"); return; }
+    if (msg.kind === "cancel") { appendDetail(recvDetails, `Sender canceled ${msg.xferId || msg.fileId}`); return; }
+
+    if (msg.kind === "resume-needed") {
+      appendDetail(recvDetails, `Sender cannot resume ${msg.xferId}; ask sender to reattach file`);
+      return;
+    }
+    if (msg.kind === "resume-accept") {
+      appendDetail(recvDetails, `Sender accepted resume for ${msg.xferId}`);
+      return;
+    }
+
     if (msg.kind === "file-meta") {
-      const { fileId, name, size, type, chunkSize, totalChunks, sha256, hashAlg } = msg;
+      const { fileId, xferId, name, size, type, chunkSize, totalChunks, sha256, hashAlg } = msg;
       const state = {
-        fileId, name, size, type,
+        fileId, xferId, name, size, type,
         chunkSize, totalChunks,
         receivedCount: 0,
         receivedBytes: 0,
@@ -747,7 +868,17 @@ async function onCtrlMessage(ev) {
         verified: null
       };
 
-      if ("showSaveFilePicker" in window) {
+      // If we already have a persisted manifest (resume after reload), load have and counts
+      const persisted = await idbGetFile(xferId).catch(()=>null);
+      if (persisted && persisted.totalChunks === totalChunks) {
+        state.have = new Uint8Array(persisted.have || new Array(totalChunks).fill(0));
+        state.receivedCount = Number(persisted.receivedCount || 0);
+        state.receivedBytes = Number(persisted.receivedBytes || 0);
+        appendDetail(recvDetails, `Resuming ${name}: ${state.receivedCount}/${totalChunks} chunks present`);
+      }
+
+      // Try File System Access API (direct to disk)
+      if ("showSaveFilePicker" in window && !persisted?.fileHandle) {
         try {
           const suggestion = uniqueName(name, conflictModeSel?.value || "auto-rename");
           const handle = await window.showSaveFilePicker({
@@ -756,29 +887,49 @@ async function onCtrlMessage(ev) {
           });
           state.writer = await handle.createWritable();
           try { await state.writer.truncate(size); } catch {}
+          // Persist handle if possible (structured clone handles in Chromium)
+          try {
+            await idbPutFile({
+              xferId, name, size, type, chunkSize, totalChunks,
+              have: state.have, receivedCount: state.receivedCount, receivedBytes: state.receivedBytes,
+              fileHandle: handle, writerMode: true
+            });
+          } catch { /* ignore handle persist failure */ }
           log(`Receiver: writing ${name} directly to disk as ${suggestion}`);
         } catch {
           state.writer = null;
         }
+      } else {
+        // Persist manifest without handle (memory mode or resuming)
+        try {
+          await idbPutFile({
+            xferId, name, size, type, chunkSize, totalChunks,
+            have: state.have, receivedCount: state.receivedCount, receivedBytes: state.receivedBytes,
+            fileHandle: persisted?.fileHandle || null, writerMode: !!persisted?.fileHandle
+          });
+        } catch {}
       }
 
       recvFiles.set(fileId, state);
       if (recvStatus) recvStatus.textContent = `Receiving ${name} (${formatBytes(size)})...`;
-      if (recvDetails) recvDetails.innerHTML = "";
-      log("Receiving metadata:", { fileId, name, size, chunkSize, totalChunks, sha256, hashAlg });
+      if (recvDetails && !persisted) recvDetails.innerHTML = "";
+      log("Receiving metadata:", { fileId, xferId, name, size, chunkSize, totalChunks });
 
+      // Apply any chunks buffered pre-metadata
       const pending = preMetaChunks.get(fileId);
       if (pending && pending.length) {
         for (const ab of pending) await applyBinaryChunk(ab);
         preMetaChunks.delete(fileId);
       }
     }
+
+    // resume-request is only sent by receiver; handled on sender side
   } catch {
     // ignore parse errors
   }
 }
 
-// Sender listens for ACKs, NACKs, and keep-alive
+// Sender: ctrl messages (ACK, NACK, resume-request, keepalive)
 function onCtrlMessageSenderSide(ev) {
   const data = ev.data;
   if (typeof data !== "string") return;
@@ -786,13 +937,16 @@ function onCtrlMessageSenderSide(ev) {
     const msg = JSON.parse(data);
 
     if (msg.kind === "ping") {
-      if (ctrl && ctrl.open) {
-        safeSend(ctrl.dc, JSON.stringify({ kind: "pong", t: msg.t })).catch(()=>{});
-      }
+      if (ctrl && ctrl.open) { safeSend(ctrl.dc, JSON.stringify({ kind: "pong", t: msg.t })).catch(()=>{}); }
       return;
     }
-    if (msg.kind === "pong") {
-      lastPong = Date.now();
+    if (msg.kind === "pong") { lastPong = Date.now(); return; }
+
+    if (msg.kind === "pause-all") { SENDER_PAUSED = true; updatePRCButtons(); return; }
+    if (msg.kind === "resume-all") { SENDER_PAUSED = false; updatePRCButtons(); return; }
+    if (msg.kind === "cancel-all") {
+      for (const fileId of outgoing.keys()) CANCEL_SET.add(fileId);
+      updatePRCButtons();
       return;
     }
 
@@ -827,6 +981,11 @@ function onCtrlMessageSenderSide(ev) {
       (async () => {
         let ci = 0;
         for (const idx of missing) {
+          // Honor cancel while repairing
+          if (CANCEL_SET.has(fileId)) break;
+          // Honor pause while repairing
+          while (SENDER_PAUSED) await sleep(50);
+
           const start = idx * chunkSize;
           const end = Math.min(file.size, start + chunkSize);
           const slice = file.slice(start, end);
@@ -840,6 +999,54 @@ function onCtrlMessageSenderSide(ev) {
 
       return;
     }
+
+    if (msg.kind === "resume-request") {
+      // Receiver requests resume for one or multiple xferIds
+      const entries = msg.entries || [];
+      for (const ent of entries) {
+        // Find a matching outgoing by xferId
+        const match = [...outgoing.entries()].find(([_, v]) => v.xferId === ent.xferId);
+        if (!match) {
+          // Cannot resume (sender doesn't have the file available)
+          if (ctrl?.open) safeSend(ctrl.dc, JSON.stringify({ kind: "resume-needed", xferId: ent.xferId })).catch(()=>{});
+          continue;
+        }
+        const [fileId, info] = match;
+        const { file, chunkSize } = info;
+        const dataChans = channels.filter(c => c.open && c.type === "data");
+        if (!dataChans.length) continue;
+
+        if (ctrl?.open) safeSend(ctrl.dc, JSON.stringify({ kind: "resume-accept", xferId: ent.xferId })).catch(()=>{});
+
+        const makeHeader = (fid, idx) => {
+          const buf = new ArrayBuffer(8);
+          const dv = new DataView(buf);
+          dv.setUint32(0, fid);
+          dv.setUint32(4, idx);
+          return buf;
+        };
+
+        (async () => {
+          let ci = 0;
+          for (const idx of ent.missing || []) {
+            // Honor cancel/pause
+            if (CANCEL_SET.has(fileId)) break;
+            while (SENDER_PAUSED) await sleep(50);
+
+            const start = idx * chunkSize;
+            const end = Math.min(file.size, start + chunkSize);
+            const slice = file.slice(start, end);
+            const frame = new Blob([makeHeader(fileId, idx), slice]);
+            const dc = dataChans[ci % dataChans.length].dc;
+            await safeSend(dc, frame);
+            ci++;
+          }
+          await Promise.all(dataChans.map(c => waitForBufferedAmountLow(c.dc)));
+        })();
+      }
+      return;
+    }
+
   } catch {
     // ignore
   }
@@ -873,9 +1080,7 @@ async function applyBinaryChunk(ab) {
     return;
   }
 
-  if (st.have[chunkIndex] === 1) {
-    return; // duplicate
-  }
+  if (st.have[chunkIndex] === 1) return; // duplicate
 
   const payload = new Uint8Array(ab, 8);
 
@@ -884,21 +1089,51 @@ async function applyBinaryChunk(ab) {
       await st.writer.write({ type: "write", position: chunkIndex * st.chunkSize, data: payload });
       st.have[chunkIndex] = 1;
       st.receivedCount += 1;
+      st.receivedBytes += payload.byteLength;
+      // Persist progress (writer mode)
+      try {
+        await idbPutFile({
+          xferId: st.xferId, name: st.name, size: st.size, type: st.type,
+          chunkSize: st.chunkSize, totalChunks: st.totalChunks,
+          have: st.have, receivedCount: st.receivedCount, receivedBytes: st.receivedBytes,
+          fileHandle: null, writerMode: true
+        });
+      } catch {}
     } catch (e) {
       log("Writer error; falling back to memory:", e);
       st.writer = null;
       st.chunks[chunkIndex] = payload;
       st.have[chunkIndex] = 1;
       st.receivedCount += 1;
+      st.receivedBytes += payload.byteLength;
+      try { await idbPutChunk(st.xferId, chunkIndex, new Blob([payload])); } catch {}
+      try {
+        await idbPutFile({
+          xferId: st.xferId, name: st.name, size: st.size, type: st.type,
+          chunkSize: st.chunkSize, totalChunks: st.totalChunks,
+          have: st.have, receivedCount: st.receivedCount, receivedBytes: st.receivedBytes,
+          fileHandle: null, writerMode: false
+        });
+      } catch {}
     }
   } else {
+    // In-memory mode; persist chunk
     st.chunks[chunkIndex] = payload;
     st.have[chunkIndex] = 1;
     st.receivedCount += 1;
+    st.receivedBytes += payload.byteLength;
+    try { await idbPutChunk(st.xferId, chunkIndex, new Blob([payload])); } catch {}
+    try {
+      await idbPutFile({
+        xferId: st.xferId, name: st.name, size: st.size, type: st.type,
+        chunkSize: st.chunkSize, totalChunks: st.totalChunks,
+        have: st.have, receivedCount: st.receivedCount, receivedBytes: st.receivedBytes,
+        fileHandle: null, writerMode: false
+      });
+    } catch {}
   }
 
-  st.receivedBytes += payload.byteLength;
-
+  // Progress
   if (!st._speedo) st._speedo = Speedo();
   st._speedo.add(payload.byteLength);
   const rate = st._speedo.rate();
@@ -946,7 +1181,7 @@ async function finalizeFile(st) {
     note.textContent = `Saved ${finalName}`;
     downloads?.appendChild(note);
   } else {
-    // Assemble Blob and store for bulk download (no individual buttons)
+    // Assemble Blob from persisted (in-memory) chunks
     const parts = new Array(st.totalChunks);
     let total = 0;
     for (let i = 0; i < st.totalChunks; i++) {
@@ -998,6 +1233,13 @@ async function finalizeFile(st) {
   } else {
     appendDetail(recvDetails, `ctrl not open; cannot send ACK`);
   }
+
+  // Cleanup persistence for xferId
+  try {
+    await idbDeleteFile(st.xferId);
+    await idbDeleteChunksFor(st.xferId);
+  } catch {}
+
   recvFiles.delete(st.fileId);
   log("File received:", st.name);
 }
@@ -1017,6 +1259,11 @@ function teardownPeer(reason) {
   if (chunkSizeKBInput) chunkSizeKBInput.disabled = false;
 
   log("Tore down peer:", reason);
+}
+
+function updateSendEnabled() {
+  if (!btnSend) return;
+  btnSend.disabled = !(channels.some(c => c.open && c.type === "data") && fileInput?.files?.length > 0);
 }
 
 function formatBytes(n) {
@@ -1045,6 +1292,7 @@ function toggleDisabled(el, state) {
   if (state) el.setAttribute("disabled", "");
   else el.removeAttribute("disabled");
 }
+function setDisabled(el, state) { toggleDisabled(el, state); }
 
 // Filename conflict handling
 const seenNames = new Map(); // name -> count
@@ -1054,7 +1302,6 @@ function uniqueName(name, mode) {
     if (!seenNames.has(name)) { seenNames.set(name, 1); return name; }
     return `${name}.skipped`;
   }
-  // auto-rename: name (n).ext
   const { base, ext } = splitExt(name);
   let key = name;
   if (!seenNames.has(key)) { seenNames.set(key, 1); return name; }
@@ -1144,9 +1391,8 @@ function splitExt(name) {
     const code = (codeInput?.value || "").trim();
     if (!isValidCode(code)) return;
     const url = shareUrlFor(code);
-    try {
-      await navigator.clipboard.writeText(url);
-    } catch {
+    try { await navigator.clipboard.writeText(url); }
+    catch {
       try {
         const ta = document.createElement("textarea");
         ta.value = url;
@@ -1164,7 +1410,7 @@ function splitExt(name) {
     const params = new URLSearchParams(location.search);
     const code = params.get("code");
     const join = params.get("join");
-    const role = params.get("role"); // "receiver" or "sender"
+    const role = params.get("role");
 
     if (code && isValidCode(code) && codeInput) {
       codeInput.value = code;
@@ -1184,3 +1430,33 @@ function splitExt(name) {
 
   updateFromCode();
 })();
+
+/* ===== Receiver resume bootstrap ===== */
+async function trySendResumeRequests() {
+  try {
+    const pending = await idbListIncomplete();
+    if (!pending.length) return;
+    // Build entries with missing indices derived from have bitmap
+    const entries = [];
+    for (const f of pending) {
+      const have = new Uint8Array(f.have || []);
+      const missing = [];
+      for (let i = 0; i < f.totalChunks; i++) if (have[i] !== 1) missing.push(i);
+      if (missing.length) {
+        entries.push({
+          xferId: f.xferId,
+          size: f.size,
+          chunkSize: f.chunkSize,
+          totalChunks: f.totalChunks,
+          missing
+        });
+      }
+    }
+    if (entries.length && ctrl?.open) {
+      await safeSend(ctrl.dc, JSON.stringify({ kind: "resume-request", entries }));
+      appendDetail(recvDetails, `Requested resume for ${entries.length} file(s).`);
+    }
+  } catch (e) {
+    log("Resume scan failed:", e?.message || e);
+  }
+}

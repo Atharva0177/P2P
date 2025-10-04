@@ -1,99 +1,134 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta
     name="viewport"
     content="width=device-width, initial-scale=1, maximum-scale=1"
   />
+  <meta name="theme-color" content="#0b1020" />
   <title>Web AirDrop (P2P via WebRTC)</title>
+
+  <!-- Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+
+  <!-- Styles -->
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <div class="container">
-    <h1>Web AirDrop</h1>
-    <p class="subtitle">Peer‑to‑peer file transfer over the internet using WebRTC</p>
+  <!-- App chrome -->
+  <header class="appbar">
+    <div class="appbar__inner">
+      <div class="brand">
+        <span class="brand__dot"></span>
+        <span class="brand__text">Web AirDrop</span>
+      </div>
+      <div class="appbar__actions">
+        <button id="btnTheme" class="icon-btn" title="Toggle theme" aria-label="Toggle theme">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.64 13a1 1 0 0 0-1.05-.14 8 8 0 1 1-9.45-9.45 1 1 0 0 0-.14-1.05A1 1 0 0 0 9 2a10 10 0 1 0 13 13 1 1 0 0 0-.36-2Z"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
 
-    <section class="card">
+  <div class="container">
+    <header class="hero reveal">
+      <h1 class="hero__title">Web AirDrop</h1>
+      <p class="hero__subtitle">Peer‑to‑peer file transfer over the internet using WebRTC</p>
+    </header>
+
+    <section class="card reveal">
       <h2>1) Start or join a session</h2>
       <div class="row">
-        <button id="btnNewCode">Create session code</button>
+        <button id="btnNewCode" class="btn">Create session code</button>
         <input id="codeInput" placeholder="Enter 6-digit code" maxlength="6" />
-        <button id="btnJoin">Join</button>
+        <button id="btnJoin" class="btn">Join</button>
       </div>
 
       <!-- QR actions -->
       <div class="row">
-        <button id="btnShowQR" disabled>Show QR</button>
-        <button id="btnCopyLink" disabled>Copy link</button>
+        <button id="btnShowQR" class="btn ghost" disabled>Show QR</button>
+        <button id="btnCopyLink" class="btn ghost" disabled>Copy link</button>
       </div>
 
       <!-- QR panel -->
       <div id="qrPanel" class="qr-panel" hidden>
-        <div id="qrCode"></div>
+        <div id="qrCode" class="qr-panel__code"></div>
         <div class="qr-text">
           <p class="hint" id="qrHint">Scan this on the other device to auto-join as receiver.</p>
           <a id="shareLink" href="#" target="_blank" rel="noopener" class="qr-link"></a>
         </div>
       </div>
 
-      <p id="sessionInfo"></p>
+      <p id="sessionInfo" class="muted"></p>
     </section>
 
-    <section class="card">
+    <section class="card reveal">
       <h2>2) Transfer settings</h2>
       <p class="hint">Choose before selecting a role. These settings affect the sender only.</p>
-      <div class="row" style="gap:16px; align-items: center;">
-        <label for="numChannels" style="min-width: 160px;">Parallel channels</label>
+      <div class="row row--controls">
+        <label for="numChannels">Parallel channels</label>
         <input id="numChannels" type="number" min="1" max="8" value="4" />
-        <label for="chunkSizeKB" style="min-width: 160px;">Chunk size (KiB)</label>
+        <label for="chunkSizeKB">Chunk size (KiB)</label>
         <input id="chunkSizeKB" type="number" min="16" max="1024" step="16" value="128" />
       </div>
       <p class="hint">Tip: 2–6 channels and 64–256 KiB chunks are good starting points.</p>
     </section>
 
-    <section class="card">
+    <section class="card reveal">
       <h2>3) Choose role</h2>
       <div class="row">
-        <button id="btnIamSender" disabled>I am the sender</button>
-        <button id="btnIamReceiver" disabled>I am the receiver</button>
+        <button id="btnIamSender" class="btn" disabled>I am the sender</button>
+        <button id="btnIamReceiver" class="btn" disabled>I am the receiver</button>
       </div>
       <p class="hint">Open this site on the other device and join with the same code.</p>
     </section>
 
-    <section class="card" id="senderPanel" hidden>
+    <section class="card reveal" id="senderPanel" hidden>
       <h2>Sender</h2>
 
       <!-- Drag & drop -->
       <div id="dropZone" class="dropzone">
-        <p>Drag & drop files or folders here</p>
-        <p class="muted">or use the pickers below</p>
+        <div class="dropzone__hint">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0 4 4m-4-4-4 4M6 20h12a2 2 0 0 0 2-2v-4M4 14v4a2 2 0 0 0 2 2"/></svg>
+          <div>
+            <p>Drag & drop files or folders here</p>
+            <p class="muted">or use the pickers below</p>
+          </div>
+        </div>
       </div>
 
       <div class="row">
         <input type="file" id="fileInput" multiple />
         <input type="file" id="dirInput" webkitdirectory multiple hidden />
-        <button id="btnPickFiles" type="button" class="secondary">Choose files</button>
-        <button id="btnPickFolders" type="button" class="secondary">Choose folder(s)</button>
+        <button id="btnPickFiles" type="button" class="btn ghost">Choose files</button>
+        <button id="btnPickFolders" type="button" class="btn ghost">Choose folder(s)</button>
       </div>
 
       <div class="row">
-        <button id="btnSend" disabled>Send</button>
-        <button id="btnResetSender" class="secondary">Send another</button>
+        <button id="btnSend" class="btn primary" disabled>Send</button>
+        <button id="btnResetSender" class="btn ghost">Send another</button>
+      </div>
+
+      <!-- Optional pause/resume/cancel (wire-up already present in your app.js if you added it) -->
+      <div class="row">
+        <button id="btnPauseAll" class="btn ghost" disabled>Pause</button>
+        <button id="btnResumeAll" class="btn ghost" disabled>Resume</button>
+        <button id="btnCancelAll" class="btn ghost danger" disabled>Cancel</button>
       </div>
 
       <div class="progress">
-        <div id="sendProgress" class="bar" style="width:0%"></div>
+        <div id="sendProgress" class="bar bar--animate" style="width:0%"></div>
       </div>
-      <p id="sendStatus"></p>
+      <p id="sendStatus" class="muted"></p>
       <ul id="sendDetails" class="details"></ul>
     </section>
 
-    <section class="card" id="receiverPanel" hidden>
+    <section class="card reveal" id="receiverPanel" hidden>
       <h2>Receiver</h2>
 
-      <div class="row" style="gap:16px; align-items:center">
-        <label for="conflictMode" style="min-width: 160px;">On filename conflict</label>
+      <div class="row row--controls">
+        <label for="conflictMode">On filename conflict</label>
         <select id="conflictMode">
           <option value="auto-rename" selected>Auto-rename</option>
           <option value="overwrite">Overwrite</option>
@@ -102,33 +137,32 @@
       </div>
 
       <div class="progress">
-        <div id="recvProgress" class="bar" style="width:0%"></div>
+        <div id="recvProgress" class="bar bar--animate" style="width:0%"></div>
       </div>
-      <p id="recvStatus"></p>
+      <p id="recvStatus" class="muted"></p>
       <ul id="recvDetails" class="details"></ul>
 
-      <div id="downloads"></div>
+      <div id="downloads" class="downloads"></div>
 
       <div class="row" style="margin-top:10px;">
-        <button id="btnDownloadAll" class="secondary" disabled>Download all</button>
-        <button id="btnClearDownloads" class="secondary">Clear downloads</button>
+        <button id="btnDownloadAll" class="btn ghost" disabled>Download all</button>
+        <button id="btnClearDownloads" class="btn ghost">Clear downloads</button>
       </div>
     </section>
 
-    <section class="card">
+    <section class="card reveal">
       <h2>Log</h2>
       <pre id="log" class="log"></pre>
     </section>
 
-    <footer>
+    <footer class="site-footer reveal">
       <p>For best reliability across networks, configure a TURN server. This demo uses public STUN.</p>
     </footer>
   </div>
 
-  <!-- QR code generator -->
+  <!-- Scripts: UI polish first, then QR lib, then app -->
+  <script src="/static/ui.js?v=1" type="module"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-
-  <!-- Bump the version to force browsers to fetch the updated JS -->
-  <script src="/static/app.js?v=10" type="module"></script>
+  <script src="/static/app.js?v=12" type="module"></script>
 </body>
 </html>
